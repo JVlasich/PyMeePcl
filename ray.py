@@ -7,60 +7,60 @@ class Ray():
     Klasse die einen Strahl anhand Ursprung und Richtung beschreibt.
 
     Attribute:
-        richtung, strahl: np.ndarray
+        direction, strahl: np.ndarray
     """
-    def __init__(self, ursprung: np.ndarray, richtung: np.ndarray) -> None:
-        if not ((ursprung.shape == (3,)) and (richtung.shape == (3,))):
+    def __init__(self, origin: np.ndarray, direction: np.ndarray) -> None:
+        if not ((origin.shape == (3,)) and (direction.shape == (3,))):
             raise ValueError("Argumente müssen jeweils 3 Dimensionen haben") 
 
-        self.ursprung = ursprung
-        self.richtung = richtung
+        self.origin = origin
+        self.direction = direction
 
     @property
-    def ursprung(self) -> np.ndarray:
-        """Get ursprung"""
-        return self._ursprung
+    def origin(self) -> np.ndarray:
+        """Get origin"""
+        return self._origin
 
-    @ursprung.setter
-    def ursprung(self, value: np.ndarray):
-        """Set ursprung und validiere"""
+    @origin.setter
+    def origin(self, value: np.ndarray):
+        """Set origin und validiere"""
         if not isinstance(value, np.ndarray):
-            raise TypeError("ursprung muss ein NumPy ndarray sein.")
+            raise TypeError("Ursprung muss ein NumPy ndarray sein.")
         if value.shape != (3,):
-            raise ValueError("ursprung muss ein 3D vector (shape (3,)) sein")
-        self._ursprung = value
+            raise ValueError("Ursprung muss ein 3D vector (shape (3,)) sein")
+        self._origin = value
 
     @property
-    def richtung(self) -> np.ndarray:
-        """Get richtung"""
-        return self._richtung
+    def direction(self) -> np.ndarray:
+        """Get direction"""
+        return self._direction
 
-    @richtung.setter
-    def richtung(self, value: np.ndarray):
-        """Set, validiere und normalisiere richtung"""
+    @direction.setter
+    def direction(self, value: np.ndarray):
+        """Set, validiere und normalisiere direction"""
         if not isinstance(value, np.ndarray):
-            raise TypeError("richtung muss ein NumPy ndarray sein")
+            raise TypeError("direction muss ein NumPy ndarray sein")
         if value.shape != (3,):
-            raise ValueError("richtung muss ein 3D vector (shape (3,)) sein")
+            raise ValueError("direction muss ein 3D vector (shape (3,)) sein")
 
-        # Normalisiere den Richtungsvektor
+        # Normalisiere den directionsvektor
         norm = np.linalg.norm(value)
         if np.isclose(norm, 0):
-            raise ValueError("Richtung darf kein Nullvektor sein")
-        self._richtung = value / norm
+            raise ValueError("direction darf kein Nullvektor sein")
+        self._direction = value / norm
 
     def point_at_parameter(self, t: float) -> np.ndarray:
         """
         Gibt den Punkt entlang des Strahles nach t metern wieder
         """
-        return self.ursprung + t * self.richtung
+        return self.origin + t * self.direction
 
     def __repr__(self):
-        return f"Ray( Ursprung={self.ursprung}, Richtung={self.richtung})"
+        return f"Ray( Ursprung={self.origin}, direction={self.direction})"
 
     def draw_ray(self, ax, t):
         """Plottet den Strahl als t-meter langes Liniensegment auf eine übergebene axes"""
-        start_point = self.ursprung
+        start_point = self.origin
         end_point = self.point_at_parameter(t)
     
         # Plotte den Ursprung als Punkt
@@ -71,8 +71,3 @@ class Ray():
                 [start_point[1], end_point[1]], 
                 [start_point[2], end_point[2]], 
                 color='red', label=f'Ray (length={t})')
-
-        
-
-# test = Ray(np.array([1,2,3]), np.array([10,10,10]))
-# print(test)
