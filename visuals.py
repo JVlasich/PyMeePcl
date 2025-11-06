@@ -3,7 +3,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import copclib as copc
 
-def draw_boxes(boxes: List[copc.Box], ax) -> None: # pyright: ignore[reportAttributeAccessIssue]
+def draw_boxes(boxes: List[copc.Box], ax) -> None:
     """ Nimmt eine Liste von copc.Box Instanzen entgegen und plottet sie auf eine vordefinierte mpl axes"""
 
     for box in boxes:

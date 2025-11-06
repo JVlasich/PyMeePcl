@@ -68,16 +68,10 @@ class Ray():
                 color='red', label=f'Ray (length={t})')
         
     def slab_test(self, box: copc.Box) -> bool:
+        """Führt einen vektorisierten slab-Test mit einer copc.Box instanz aus"""
         t_min, t_max = 0.0, np.inf
         box_min = np.array([box.x_min, box.y_min, box.z_min])
         box_max = np.array([box.x_max, box.y_max, box.z_max])
-
-        #Für jede der drei Dimensionen, nicht vektorisiert
-        #for d in range(3):
-        #    t1 = (box_min[d] - self.origin[d]) * self._inverse_direction[d]
-        #    t2 = (box_max[d] - self.origin[d]) * self._inverse_direction[d]
-        #    t_min = max(t_min, min(t1, t2))
-        #    t_max = min(t_max, max(t1, t2))
         
         t1 = (box_min - self.origin) * self._inverse_direction
         t2 = (box_max - self.origin) * self._inverse_direction
