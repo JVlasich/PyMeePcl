@@ -57,8 +57,8 @@ class Ray():
     def slab_test(self, box: copc.Box) -> bool:
         """Führt einen vektorisierten slab-Test mit einer copc.Box Instanz aus"""
         t_min, t_max = 0.0, np.inf
-        box_min = np.array([box.x_min, box.y_min, box.z_min])
-        box_max = np.array([box.x_max, box.y_max, box.z_max])
+        box_min = np.array([box.x_min - args.radius, box.y_min - args.radius, box.z_min - args.radius]) # berücksichtigt radius
+        box_max = np.array([box.x_max + args.radius, box.y_max + args.radius, box.z_max + args.radius]) 
         
         t1 = (box_min - self.origin) * self._inverse_direction
         t2 = (box_max - self.origin) * self._inverse_direction
@@ -110,7 +110,7 @@ for entry in all_entries:
 
 print(f"Einlesen erfolgreich!\nDauer: {round(1000*(time.time()-start1),1)} ms\n")
 
-print("Starte Schnitttest des Strahles mit den Nodes...")
+print("Starte Schnitttest des Strahls mit den Nodes...")
 start = time.time()
 
 Strahl = Ray(np.array(args.projektionszentrum), np.array(args.direction))
@@ -126,7 +126,7 @@ for entry in all_entries:
 
 print(f"Schnitttest erfolgreich!\nDurchdrungene Nodes: {len(intersected_nodes)}\nDauer: {round(1000*(time.time()-start),1)} ms\n")
 
-print(f"Starte Extraktion der Punkte im Umkreis von {args.radius} m um den Strahl...")
+print(f"Starte Einlesen der Punkte aus den gefundenen Nodes...")
 start = time.time()
 
 # Punkte aus den geschnittenen Nodes extrahieren
@@ -146,6 +146,14 @@ all_z = np.concatenate(all_z_arrays)
 
 punkte = np.column_stack((all_x, all_y, all_z))
 
+print(f"""Punkte Erfolgreich eingelesen!
+Anzahl der eingelesenen Punkte: {len(punkte)}
+Durchschnittliche Anzahl an Punkten pro Node: {round(len(punkte)/len(intersected_nodes))}
+Dauer: {round(1000*(time.time()-start),1)} ms\n""")
+
+print(f"Starte Koordinatentransformation in das lokale System des Strahls...")
+start=time.time()
+
 # neues koordinatensystem definieren
 ursprung = Strahl.origin
 x_achse = Strahl.direction
@@ -163,6 +171,12 @@ rotation = np.column_stack((x_achse,y_achse,z_achse))
 
 punkte_transformiert = punkte - ursprung
 punkte_transformiert = punkte_transformiert @ rotation
+
+print(f"""Transformation erfolgreich!
+Dauer: {round(1000*(time.time()-start),1)} ms\n""")
+
+print(f"Starte Extraktion der Punkte im Umkreis von {args.radius} m um den Strahl...")
+start = time.time()
 
 # Abstandsquadrate Test
 y_koordinaten = punkte_transformiert[:,1]
