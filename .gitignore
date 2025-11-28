@@ -1,6 +1,10 @@
 node_traversal.txt
 ray_cast_alt.py
 punkte.xyz
+tiefentest.csv
+.\daten\autzen.laz
+todo.txt
+ray_cast_test.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

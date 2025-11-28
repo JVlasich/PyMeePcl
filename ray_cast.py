@@ -91,6 +91,9 @@ parser.add_argument("-r", "--radius", type=float, default=10,
 # outputfile
 parser.add_argument("-o", "--output", dest="outputfile", type=str, default="punkte.xyz",
                     help="Pfad zum outputfile (default: punkte.xyz)")
+# sortieren nach entfernung vom Strahl                    
+parser.add_argument("-s", "--sorted", dest="sorted", type=bool, default=True,
+                    help="Punkte nach Entfernung entlang des Strahls sortieren")
 
 args = parser.parse_args()
 
@@ -124,7 +127,7 @@ for entry in all_entries:
         intersected_nodes.append(entry)
         intersected_boxes.append(box)
 
-print(f"Schnitttest erfolgreich!\nDurchdrungene Nodes: {len(intersected_nodes)}\nDauer: {round(1000*(time.time()-start),1)} ms\n")
+print(f"Schnitttest erfolgreich!\nDurchdrungene Nodes: {len(intersected_nodes)} / {len(all_entries)}\nDauer: {round(1000*(time.time()-start),1)} ms\n")
 
 print(f"Starte Einlesen der Punkte aus den gefundenen Nodes...")
 start = time.time()
@@ -188,6 +191,7 @@ abstandsquadrate_maske = abstandsquadrate < (args.radius**2)
 # anwenden der Maske
 punkte_im_zylinder_global = punkte[abstandsquadrate_maske]
 
+
 print(f"""Punkte erfolgreich extrahiert!
 Gefundene Punkte: {len(punkte_im_zylinder_global)}
 Gespeichert in: {args.outputfile}
@@ -196,4 +200,15 @@ Dauer: {round(1000*(time.time()-start),1)} ms
 Dauer des gesamten Programms: {round(1000*(time.time()-start1),1)} ms
 """)
 
-np.savetxt(args.outputfile, punkte_im_zylinder_global)
+# Sortieren falls gewünscht
+if args.sorted:
+    punkte_im_zylinder_lokal = punkte_transformiert[abstandsquadrate_maske]
+    punkte_im_zylinder_lokal = punkte_im_zylinder_lokal[punkte_im_zylinder_lokal[:, 0].argsort()]
+
+    # Rücktransformation
+    punkte_rücktransformiert = punkte_im_zylinder_lokal @ rotation.T
+    punkte_rücktransformiert = punkte_rücktransformiert + ursprung
+
+    np.savetxt(args.outputfile, punkte_rücktransformiert)
+else:
+    np.savetxt(args.outputfile, punkte_im_zylinder_global)
