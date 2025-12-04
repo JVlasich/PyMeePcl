@@ -72,6 +72,30 @@ class Ray():
         t_max = np.min(t_far) # frühest möglicher Austrittszeitpunkt
         
         return (t_min < t_max)
+    
+    def slab_test_vectorized(self, boxes_min: np.ndarray, boxes_max: np.ndarray, radius: float) -> np.ndarray:
+        """
+        Tests intersection against given boxes simultaneously.
+        Returns a boolean mask.
+        """
+        # Expand boxes by radius
+        b_min = boxes_min - radius
+        b_max = boxes_max + radius
+
+        # Vectorized calculation (N, 3)
+        t1 = (b_min - self.origin) * self._inverse_direction
+        t2 = (b_max - self.origin) * self._inverse_direction
+
+        # Find t_near and t_far
+        t_near = np.minimum(t1, t2)
+        t_far = np.maximum(t1, t2)
+
+        # Max of nearest, Min of farthest (Collapse to shape (N,))
+        t_enter = np.max(t_near, axis=1)
+        t_exit = np.min(t_far, axis=1)
+
+        # Valid intersection if entry < exit and exit > 0 (box is not behind ray)
+        return (t_enter < t_exit) & (t_exit > 0)
 
 # Argument parser erstellen
 parser = argparse.ArgumentParser(description="Ein Script welches alle Punkte in einem Radius um einen Bildstrahl aus einer copc Datei extrahiert")
@@ -107,9 +131,9 @@ las_header = reader.copc_config.las_header
 
 # Alle Nodes auslesen und Bounding Boxen konstruieren
 all_entries = reader.GetAllNodes()
-boxes = []
-for entry in all_entries:
-    boxes.append(copc.Box(entry.key, las_header)) 
+#boxes = []
+#for entry in all_entries:
+#    boxes.append(copc.Box(entry.key, las_header)) 
 
 print(f"Einlesen erfolgreich!\nDauer: {round(1000*(time.time()-start1),1)} ms\n")
 
@@ -118,14 +142,28 @@ start = time.time()
 
 Strahl = Ray(np.array(args.projektionszentrum), np.array(args.direction))
 
-intersected_nodes = []
-intersected_boxes = []
+#intersected_nodes = []
+#intersected_boxes = []
+#
+#for entry, box in zip(all_entries, boxes):
+##for entry in all_entries:
+#    #box = copc.Box(entry.key, las_header)
+#    if Strahl.slab_test(box):
+#        intersected_nodes.append(entry)
+#        intersected_boxes.append(box)
 
-for entry in all_entries:
+# 
+count = len(all_entries)
+boxes_min = np.zeros((count, 3))
+boxes_max = np.zeros((count, 3))
+
+for i, entry in enumerate(all_entries):
     box = copc.Box(entry.key, las_header)
-    if Strahl.slab_test(box):
-        intersected_nodes.append(entry)
-        intersected_boxes.append(box)
+    boxes_min[i] = [box.x_min, box.y_min, box.z_min]
+    boxes_max[i] = [box.x_max, box.y_max, box.z_max]
+
+intersect_mask = Strahl.slab_test_vectorized(boxes_min, boxes_max, args.radius)
+intersected_nodes = [all_entries[i] for i in range(count) if intersect_mask[i]]
 
 print(f"Schnitttest erfolgreich!\nDurchdrungene Nodes: {len(intersected_nodes)} / {len(all_entries)}\nDauer: {round(1000*(time.time()-start),1)} ms\n")
 
@@ -133,21 +171,39 @@ print(f"Starte Einlesen der Punkte aus den gefundenen Nodes...")
 start = time.time()
 
 # Punkte aus den geschnittenen Nodes extrahieren
-intersected_points_packed = []
+#intersected_points_packed = []
 
-for node in intersected_nodes:
-    intersected_points_packed.append(reader.GetPoints(node))
+#for node in intersected_nodes:
+    #intersected_points_packed.append(reader.GetPoints(node))
 
 # Punkte in ein Numpy array überführen
-all_x_arrays = [points.x for points in intersected_points_packed]
-all_y_arrays = [points.y for points in intersected_points_packed]
-all_z_arrays = [points.z for points in intersected_points_packed]
+#all_x_arrays = [points.x for points in intersected_points_packed]
+#all_y_arrays = [points.y for points in intersected_points_packed]
+#all_z_arrays = [points.z for points in intersected_points_packed]
 
-all_x = np.concatenate(all_x_arrays)
-all_y = np.concatenate(all_y_arrays)
-all_z = np.concatenate(all_z_arrays)
+#all_x = np.concatenate(all_x_arrays)
+#all_y = np.concatenate(all_y_arrays)
+#all_z = np.concatenate(all_z_arrays)
 
-punkte = np.column_stack((all_x, all_y, all_z))
+#punkte = np.column_stack((all_x, all_y, all_z))
+
+# Anzahl Punkte
+total_points = sum(node.point_count for node in intersected_nodes)
+
+# Pre-allocate array (N, 3)
+punkte = np.empty((total_points, 3), dtype=np.float64)
+
+# Füll das Array Node für Node
+cursor = 0
+for node in intersected_nodes:
+    points = reader.GetPoints(node)
+    count = len(points.x)
+    
+    punkte[cursor:cursor+count, 0] = points.x
+    punkte[cursor:cursor+count, 1] = points.y
+    punkte[cursor:cursor+count, 2] = points.z
+    
+    cursor += count
 
 print(f"""Punkte Erfolgreich eingelesen!
 Anzahl der eingelesenen Punkte: {len(punkte)}
