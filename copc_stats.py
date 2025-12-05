@@ -20,7 +20,7 @@ if len(args.input) == 1:
         files = glob.glob("*.copc.laz", root_dir=args.input[0])
         args.input = files
 
-readers, nodes_list, point_counts_lists, minimums, maximums, mediums, medians, stds = [], [], [], [], [], [], [], []
+readers, nodes_list, point_counts_lists, minimums, maximums, mediums, medians, stds, bounds_min, bounds_max = [], [], [], [], [], [], [], [], [], []
 for i, file in enumerate(args.input):
     readers.append(copc.FileReader(file))
     nodes_list.append(readers[i].GetAllNodes())
@@ -32,6 +32,16 @@ for i, file in enumerate(args.input):
     mediums.append(stats.mean(point_counts_lists[i]))
     medians.append(stats.median(point_counts_lists[i]))
     stds.append(stats.stdev(point_counts_lists[i]))
+
+    las_header = readers[i].copc_config.las_header
+    global_bounds_min = [las_header.min.x, las_header.min.y, las_header.min.z]
+    global_bounds_max = [las_header.max.x, las_header.max.y, las_header.max.z]
+    global_bounds_min = [round(x,1) for x in global_bounds_min]
+    global_bounds_max = [round(x,1) for x in global_bounds_max]
+    bounds_min.append(global_bounds_min)
+    bounds_max.append(global_bounds_max)
+
+    
 
 if (len(args.input) == 1) or (args.write_histogram):
 
@@ -51,6 +61,12 @@ if (len(args.input) == 1) or (args.write_histogram):
         Median:         {medians[i]}
 
         Standardabweichung: {round(stds[i],1)}
+
+        Globales Minimum:
+        {bounds_min[i]}
+        
+        Globales Maximum:
+        {bounds_max[i]}
         """
         #print(text)
 
