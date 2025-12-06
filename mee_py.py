@@ -1,12 +1,14 @@
+from __future__ import annotations
 import copclib as copc
 import numpy as np
 import os
-#import matplotlib.pyplot as plt
+from os import path
 import glob
 from typing import List
 from collections import OrderedDict
-import warnings
-warnings.filterwarnings('ignore') # numpy devide by zero -> inf, wanted behaviour
+import time
+import argparse
+#warnings.filterwarnings('ignore') # numpy devide by zero -> inf, wanted behaviour
 
 
 class MeeStruct():
@@ -76,7 +78,7 @@ class MeeStruct():
         # get minimum/maximum of each column
         minimums = bounds_min.min(axis=0)
         maximums = bounds_max.max(axis=0)
-        self.bounds = [minimums, maximums]
+        self.bounds = (minimums, maximums)
 
     def add_file(self, filepath: str):
         """Adds a COPC file to the structure."""
@@ -93,7 +95,7 @@ class MeeStruct():
         # Clean cache for this file
         self.cache.remove_file(filepath)
 
-    def _transform_and_filter(self, points_np: np.ndarray, ray: "Ray", radius: float, return_sorted: bool = True) -> np.ndarray:
+    def _transform_and_filter(self, points_np: np.ndarray, ray: Ray, radius: float, return_sorted: bool = True) -> np.ndarray:
         """
         Transforms points to Local system (Ray) and filters by cylinder radius.
         """
@@ -136,14 +138,20 @@ class MeeStruct():
         else:
             return points_np[mask]
 
-    def trace_ray(self, ray: "Ray", radius: float, return_sorted: bool = True) -> np.ndarray:
+    def trace_ray(self, ray: Ray, radius: float, return_sorted: bool = True, timer=False) -> np.ndarray:
         """ 
         1. Checks global bounds of all files.
         2. Checks node bounds within hit files.
         3. Retrieves points (from Cache or Disk).
         4. Filters points within cylinder radius.
         """
+        #TODO transform and filter for each node instead of end, dont break sort logic
         all_points_list = []
+
+        start1, start = 0,0
+        if timer:
+                start1 = time.time()
+                start = time.time()
         
         for file in self.files:
             # 1. Global Box Check
@@ -152,22 +160,30 @@ class MeeStruct():
 
             # 2. Node Check
             hit_nodes = file.intersect_nodes(ray, radius)
+
+            if timer:
+                mid1,start = round((time.time()-start)*1000,1), time.time()
+                print(f"Nodes of file {path.basename(file.filepath)} intersected in {mid1} ms")
             
-            # 3. Point Extraction (with Cache)
+            # 3. Get points
             for node in hit_nodes:
                 cache_key = (file.filepath, str(node.key))
                 
-                # Try to get from Cache Object
+                # Try to get from Cache
                 points_data = self.cache.get(cache_key)
                 
                 if points_data is None:
-                    # If not found, load from disk and put in cache
+                    # If not found, load and put in cache
                     points_data = file.get_points(node)
                     self.cache.put(cache_key, points_data)
                 
-                # Convert copc points to numpy (N, 3)
+                # to numpy (N, 3)
                 node_pts = np.column_stack((points_data.x, points_data.y, points_data.z))
                 all_points_list.append(node_pts)
+
+            if timer:
+                mid2,start = round((time.time()-start)*1000,1), time.time()
+                print(f"Points of intersected nodes in file {file.filepath} loaded in {mid2} ms")
 
         if not all_points_list:
             return np.empty((0, 3))
@@ -177,6 +193,11 @@ class MeeStruct():
 
         # 4. Transform and Filter (Cylinder check)
         filtered_points = self._transform_and_filter(total_cloud, ray, radius, return_sorted=return_sorted)
+
+        if timer:
+            mid3 = round((time.time()-start)*1000,1)
+            end = round((time.time()-start1)*1000,1)
+            print(f"Points transformed and filtered in {mid3} ms\n\nTotal time: {end} ms")
 
         return filtered_points
 
@@ -253,7 +274,7 @@ class MeeFile():
         self._node_bounds_min = None
         self._node_bounds_max = None
 
-    def intersect_global(self, ray: "Ray", radius: float = 1) -> bool:
+    def intersect_global(self, ray: Ray, radius: float = 1) -> bool:
         """
         Cheks if the ray hits the bounding box of the entire file
         """
@@ -281,7 +302,7 @@ class MeeFile():
             
         self.is_indexed = True
 
-    def intersect_nodes(self, ray: "Ray", radius: float) -> list:
+    def intersect_nodes(self, ray: Ray, radius: float) -> list:
         """
         Returns a list of node entries that the ray intersects.
         Automatically builds index if not present.
@@ -358,7 +379,9 @@ class Ray():
         if np.isclose(norm, 0):
             raise ValueError("Richtung darf kein Nullvektor sein")
         self._direction = value / norm
-        self._inverse_direction = (value / norm)**(-1) 
+        with np.errstate(divide='ignore'):
+            self._inverse_direction = 1.0 / self.direction
+        #self._inverse_direction = (value / norm)**(-1) 
 
     def __str__(self):
         return f"Ray( Ursprung={self.origin}, direction={self.direction})"
@@ -403,7 +426,7 @@ class Ray():
         t_enter = np.max(t_near, axis=1)
         t_exit = np.min(t_far, axis=1)
 
-        # Valid intersection if entry < exit and exit > 0 (box is not behind ray)
+        # exit > 0 (box is not behind ray)
         return (t_enter < t_exit) #& (t_exit > 0)
 
 
@@ -459,8 +482,6 @@ class NodeCache():
 
 
 if __name__ == "__main__":
-    import time
-    import argparse
 
     # Argument parser erstellen
     parser = argparse.ArgumentParser(description="Ein Script welches alle Punkte in einem Radius um einen Bildstrahl aus einer copc Datei extrahiert")
@@ -486,8 +507,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    start = time.time()
+    #start = time.time()
     struct = MeeStruct(args.input)
-    punkte = struct.trace_ray(Ray(np.array(args.projektionszentrum), np.array(args.direction)), radius = args.radius, return_sorted=args.sorted)
+    punkte = struct.trace_ray(Ray(np.array(args.projektionszentrum), np.array(args.direction)), radius = args.radius, return_sorted=args.sorted, timer=True)
     np.savetxt(args.outputfile, punkte)
-    print(f"Script succesfully executed!\nelapsed time: {round(1000*(time.time()-start),1)} ms\n")
+    #print(f"Script succesfully executed!\nelapsed time: {round(1000*(time.time()-start),1)} ms\n")
