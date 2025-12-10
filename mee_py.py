@@ -8,8 +8,6 @@ from typing import List
 from collections import OrderedDict
 import time
 import argparse
-#warnings.filterwarnings('ignore') # numpy devide by zero -> inf, wanted behaviour
-
 
 class MeeStruct():
     ## Methods:
@@ -26,7 +24,7 @@ class MeeStruct():
     # files (List[MeeFiles])
     # bounds (combined global bounds of all files )
     
-    def __init__(self, source: str | List[str], pattern: str = "*", cache_size = 100):
+    def __init__(self, source: str | List[str], pattern: str = "*", cache_size = 25):
         """
         Initialize with a single path string, a list of strings, or a directory string.
         arg pattern: glob search
@@ -211,10 +209,6 @@ class MeeStruct():
 
 
 
-
-
-
-
 class MeeFile():
     ## Properties:
         # reader
@@ -267,8 +261,15 @@ class MeeFile():
         self.is_indexed = False
         
         # Global bounds of the file (Min/Max from header)
-        self.global_bounds_min = np.array([self.las_header.min.x, self.las_header.min.y, self.las_header.min.z])
-        self.global_bounds_max = np.array([self.las_header.max.x, self.las_header.max.y, self.las_header.max.z])
+        self.global_bounds_min = np.array([
+            self.config.copc_info.center_x,
+            self.config.copc_info.center_y,
+            self.config.copc_info.center_z,]) - self.config.copc_info.halfsize
+
+        self.global_bounds_max = np.array([
+            self.config.copc_info.center_x,
+            self.config.copc_info.center_y,
+            self.config.copc_info.center_z,]) + self.config.copc_info.halfsize
         
         # Arrays for vectorized node checks (initialized in build_index)
         self._node_bounds_min = None
@@ -336,6 +337,7 @@ class MeeFile():
 
 
 
+
 class Ray():
     """
     Klasse die einen Strahl anhand Ursprung und Richtung beschreibt.
@@ -387,7 +389,8 @@ class Ray():
         return f"Ray( Ursprung={self.origin}, direction={self.direction})"
         
     def slab_test(self, box: copc.Box, radius) -> bool:
-        """Führt einen vektorisierten slab-Test mit einer copc.Box Instanz aus"""
+        """Tests intersection against a single copclib.Box object
+        returns bool"""
         t_min, t_max = 0.0, np.inf
         box_min = np.array([box.x_min - radius, box.y_min - radius, box.z_min - radius]) # berücksichtigt radius
         box_max = np.array([box.x_max + radius, box.y_max + radius, box.z_max + radius]) 
@@ -437,6 +440,8 @@ class Ray():
 
 
 
+
+
 class NodeCache():
     def __init__(self, max_size: int = 1000):
         self.cache = OrderedDict()
@@ -457,7 +462,7 @@ class NodeCache():
         
         # If exceed capacity, remove the oldest item
         if len(self.cache) > self.max_size:
-            self.cache.popitem(last=False) # pops the oldest) item
+            self.cache.popitem(last=False) # pops the oldest item
 
     def clear(self):
         self.cache.clear()
@@ -471,6 +476,7 @@ class NodeCache():
 
     def __len__(self):
         return len(self.cache)
+
 
 
 
@@ -507,8 +513,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    #start = time.time()
     struct = MeeStruct(args.input)
-    punkte = struct.trace_ray(Ray(np.array(args.projektionszentrum), np.array(args.direction)), radius = args.radius, return_sorted=args.sorted, timer=True)
+
+    punkte = struct.trace_ray(
+        Ray(np.array(args.projektionszentrum),
+        np.array(args.direction)),
+        radius = args.radius,
+        return_sorted=args.sorted,
+        timer=True)
+        
     np.savetxt(args.outputfile, punkte)
-    #print(f"Script succesfully executed!\nelapsed time: {round(1000*(time.time()-start),1)} ms\n")
