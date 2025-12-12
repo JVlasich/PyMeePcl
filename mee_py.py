@@ -24,7 +24,7 @@ class MeeStruct():
     # files (List[MeeFiles])
     # bounds (combined global bounds of all files )
     
-    def __init__(self, source: str | List[str], pattern: str = "*", cache_size = 25):
+    def __init__(self, source: str | List[str], pattern: str = "*", cache_size: int = 25):
         """
         Initialize with a single path string, a list of strings, or a directory string.
         arg pattern: glob search
@@ -62,6 +62,10 @@ class MeeStruct():
         self.update_bounds()
     
     def update_bounds(self):
+        """Updates the combined global bounds of all files."""
+        if len(self.files) == 0:
+            self.bounds = None
+            return
 
         # prealocate empty array
         count = len(self.files)
@@ -98,7 +102,7 @@ class MeeStruct():
         Transforms points to Local system (Ray) and filters by cylinder radius.
         """
         if len(points_np) == 0:
-            return np.array([])
+            return np.empty((0, 3))
 
         # coordinate system definition
         x_axis = ray.direction
@@ -136,20 +140,32 @@ class MeeStruct():
         else:
             return points_np[mask]
 
-    def trace_ray(self, ray: Ray, radius: float, return_sorted: bool = True, timer=False) -> np.ndarray:
+    def trace_ray(self, ray: Ray, radius: float, return_sorted: bool = True, timer: bool = False) -> np.ndarray:
         """ 
         1. Checks global bounds of all files.
         2. Checks node bounds within hit files.
         3. Retrieves points (from Cache or Disk).
         4. Filters points within cylinder radius.
+        
+        Args:
+            ray: Ray object defining origin and direction
+            radius: Cylinder radius around the ray (must be positive)
+            return_sorted: If True, returns points sorted along ray direction
+            timer: If True, prints timing information
+            
+        Returns:
+            np.ndarray: Array of shape (N, 3) containing filtered points
         """
+        if radius <= 0:
+            raise ValueError("Radius must be positive")
+        
         #TODO transform and filter for each node instead of end, dont break sort logic
         all_points_list = []
 
-        start1, start = 0,0
+        start1, start = 0.0, 0.0
         if timer:
-                start1 = time.time()
-                start = time.time()
+            start1 = time.time()
+            start = time.time()
         
         for file in self.files:
             # 1. Global Box Check
@@ -160,7 +176,8 @@ class MeeStruct():
             hit_nodes = file.intersect_nodes(ray, radius)
 
             if timer:
-                mid1,start = round((time.time()-start)*1000,1), time.time()
+                mid1 = round((time.time() - start) * 1000, 1)
+                start = time.time()
                 print(f"Nodes of file {path.basename(file.filepath)} intersected in {mid1} ms")
             
             # 3. Get points
@@ -180,7 +197,8 @@ class MeeStruct():
                 all_points_list.append(node_pts)
 
             if timer:
-                mid2,start = round((time.time()-start)*1000,1), time.time()
+                mid2 = round((time.time() - start) * 1000, 1)
+                start = time.time()
                 print(f"Points of intersected nodes in file {file.filepath} loaded in {mid2} ms")
 
         if not all_points_list:
@@ -193,8 +211,8 @@ class MeeStruct():
         filtered_points = self._transform_and_filter(total_cloud, ray, radius, return_sorted=return_sorted)
 
         if timer:
-            mid3 = round((time.time()-start)*1000,1)
-            end = round((time.time()-start1)*1000,1)
+            mid3 = round((time.time() - start) * 1000, 1)
+            end = round((time.time() - start1) * 1000, 1)
             print(f"Points transformed and filtered in {mid3} ms\n\nTotal time: {end} ms")
 
         return filtered_points
@@ -277,7 +295,7 @@ class MeeFile():
 
     def intersect_global(self, ray: Ray, radius: float = 1) -> bool:
         """
-        Cheks if the ray hits the bounding box of the entire file
+        Checks if the ray hits the bounding box of the entire file.
         """
         # Wrap single bounds in array shape (1, 3) for vectorized function
         b_min = self.global_bounds_min.reshape(1, 3)
@@ -286,7 +304,7 @@ class MeeFile():
         hit = ray.slab_test_vectorized(b_min, b_max, radius)
         return hit[0]
 
-    def build_index(self):
+    def build_index(self) -> None:
         """
         Constructs the numpy arrays required for vectorized intersection tests.
         Only runs once per file instance.
@@ -311,6 +329,9 @@ class MeeFile():
         if not self.is_indexed:
             self.build_index()
 
+        # Type assertion: after build_index(), these arrays are guaranteed to be set
+        assert self._node_bounds_min is not None and self._node_bounds_max is not None
+        
         intersect_mask = ray.slab_test_vectorized(
             self._node_bounds_min, #type: ignore
             self._node_bounds_max, #type: ignore
@@ -322,7 +343,7 @@ class MeeFile():
         
         return intersected_nodes
 
-    def get_points(self, node):
+    def get_points(self, node) -> copc.PointData:  # type: ignore
         """
         Wrapper to get points for a specific node using the reader.
         """
@@ -382,8 +403,7 @@ class Ray():
             raise ValueError("Richtung darf kein Nullvektor sein")
         self._direction = value / norm
         with np.errstate(divide='ignore'):
-            self._inverse_direction = 1.0 / self.direction
-        #self._inverse_direction = (value / norm)**(-1) 
+            self._inverse_direction = 1.0 / self.direction 
 
     def __str__(self):
         return f"Ray( Ursprung={self.origin}, direction={self.direction})"
@@ -447,14 +467,14 @@ class NodeCache():
         self.cache = OrderedDict()
         self.max_size = max_size
 
-    def get(self, key):
+    def get(self, key: tuple) -> copc.PointData | None:  # type: ignore
         """Returns node data if exists, moves it to the 'fresh' end of the list."""
         if key not in self.cache:
             return None
         self.cache.move_to_end(key) # Mark as recently used
         return self.cache[key]
 
-    def put(self, key, data):
+    def put(self, key: tuple, data: copc.PointData) -> None:  # type: ignore
         """Adds data to cache. Removes oldest item if full."""
         if key in self.cache:
             self.cache.move_to_end(key)
@@ -464,17 +484,18 @@ class NodeCache():
         if len(self.cache) > self.max_size:
             self.cache.popitem(last=False) # pops the oldest item
 
-    def clear(self):
+    def clear(self) -> None:
+        """Clears all cache entries."""
         self.cache.clear()
 
-    def remove_file(self, filepath: str):
+    def remove_file(self, filepath: str) -> None:
         """Removes all cache entries associated with a specific file."""
         # Keys are tuples: (filepath, node_key)
         keys_to_delete = [k for k in self.cache.keys() if k[0] == filepath]
         for k in keys_to_delete:
             del self.cache[k]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.cache)
 
 
