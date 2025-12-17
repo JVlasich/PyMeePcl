@@ -10,28 +10,39 @@ import time
 import argparse
 
 class MeeStruct():
-    ## Methods:
-    # trace_ray(Ray)
-    # add_file(filepath)
-    # del_file(filepath)
-
-    #TODO
-    # make_statistic()
-    # draw_boxes()
-
-    ## Properties
-    # cache (NodeCache Klasse)
-    # files (List[MeeFiles])
-    # bounds (combined global bounds of all files )
+    """
+    Manages multiple COPC files for efficient ray tracing operations.
+    
+    This class provides a unified interface to work with one or more COPC files, enabling
+    efficient spatial queries using ray tracing. It maintains a cache of loaded point data
+    and supports dynamic addition/removal of files.
+    
+    Attributes:
+        cache (NodeCache): Cache for storing loaded node point data to reduce disk reads.
+            Keys are tuples of (filepath, node_key_string), values are PointData objects.
+        files (List[MeeFile]): List of MeeFile objects representing the loaded COPC files.
+        bounds (tuple | None): Combined global bounding box of all files as a tuple of
+            (minimums, maximums), each as numpy arrays of shape (3,). None if no files loaded.
+    
+    Methods:
+        trace_ray(ray, radius, return_sorted, timer, recursive):
+            Traces a ray through all loaded files and returns points within a cylindrical radius.
+        add_file(filepath):
+            Adds a new COPC file to the structure.
+        del_file(filepath):
+            Removes a file from the structure and clears associated cache entries.
+        update_bounds():
+            Recalculates the combined global bounds of all loaded files.
+    """
     
     def __init__(self, source: str | List[str], pattern: str = "*", cache_size: int = 25):
         """
         Initialize with a single path string, a list of strings, or a directory string.
         arg pattern: glob search
-        arg cache_size: maximum nodes to be loaded
+        arg cache_size: maximum nodes to be loaded at once
         """
         self.cache = NodeCache(max_size=cache_size) # Key: (filepath, node_key_string), Value: PointData object
-        self.bounds = None
+        self.bounds_copc = None
         self.files: List[MeeFile] = []
         
         # Make into list if single input
@@ -62,9 +73,9 @@ class MeeStruct():
         self.update_bounds()
     
     def update_bounds(self):
-        """Updates the combined global bounds of all files."""
+        """Updates the combined global octree-bounds of all files."""
         if len(self.files) == 0:
-            self.bounds = None
+            self.bounds_copc = None
             return
 
         # prealocate empty array
@@ -80,7 +91,7 @@ class MeeStruct():
         # get minimum/maximum of each column
         minimums = bounds_min.min(axis=0)
         maximums = bounds_max.max(axis=0)
-        self.bounds = (minimums, maximums)
+        self.bounds_copc = (minimums, maximums)
 
     def add_file(self, filepath: str):
         """Adds a COPC file to the structure."""
@@ -143,7 +154,7 @@ class MeeStruct():
         else:
             return points_np[mask]
 
-    def trace_ray(self, ray: Ray, radius: float, return_sorted: bool = True, timer: bool = False) -> np.ndarray:
+    def trace_ray(self, ray: Ray, radius: float, return_sorted: bool = True, timer: bool = False, recursive: bool = False) -> np.ndarray:
         """ 
         1. Checks global bounds of all files.
         2. Checks node bounds within hit files.
@@ -155,6 +166,7 @@ class MeeStruct():
             radius: Cylinder radius around the ray (must be positive)
             return_sorted: If True, returns points sorted along ray direction
             timer: If True, prints timing information
+            recursive: If True, uses recursive octree traversal
             
         Returns:
             np.ndarray: Array of shape (N, 3) containing filtered points
@@ -162,7 +174,6 @@ class MeeStruct():
         if radius <= 0:
             raise ValueError("Radius must be positive")
         
-        #TODO transform and filter for each node instead of end, dont break sort logic
         all_points_list = []
 
         start1, start = 0.0, 0.0
@@ -176,7 +187,10 @@ class MeeStruct():
                 continue
 
             # 2. Node Check
-            hit_nodes = file.intersect_nodes(ray, radius)
+            if recursive:
+                hit_nodes = file.intersect_nodes_octree(ray, radius)
+            else:
+                hit_nodes = file.intersect_nodes(ray, radius)
 
             if timer:
                 mid1 = round((time.time() - start) * 1000, 1)
@@ -192,7 +206,11 @@ class MeeStruct():
                 
                 if points_data is None:
                     # If not found, load and put in cache
-                    points_data = file.get_points(node)
+                    if recursive:
+                        points_data = file.get_points(node.copclib_node)
+                    else:
+                        points_data = file.get_points(node)
+
                     self.cache.put(cache_key, points_data)
                 
                 # to numpy (N, 3)
@@ -291,10 +309,17 @@ class MeeFile():
             self.config.copc_info.center_x,
             self.config.copc_info.center_y,
             self.config.copc_info.center_z,]) + self.config.copc_info.halfsize
+
+        self.global_bounds_min_las = np.array([self.las_header.min.x, self.las_header.min.y, self.las_header.min.z])
+        self.global_bounds_max_las = np.array([self.las_header.max.x, self.las_header.max.y, self.las_header.max.z])
         
         # Arrays for vectorized node checks (initialized in build_index)
         self._node_bounds_min = None
         self._node_bounds_max = None
+        
+        # Octree structure (initialized in build_index_octree)
+        self.is_octree_indexed = False
+        self.octree_index = None
 
     def intersect_global(self, ray: Ray, radius: float = 1) -> bool:
         """
@@ -304,7 +329,7 @@ class MeeFile():
         b_min = self.global_bounds_min.reshape(1, 3)
         b_max = self.global_bounds_max.reshape(1, 3)
         
-        hit = ray.slab_test_vectorized(b_min, b_max, radius)
+        hit = slab_test_vectorized(ray, b_min, b_max, radius)
         return hit[0]
 
     def build_index(self) -> None:
@@ -312,6 +337,9 @@ class MeeFile():
         Constructs the numpy arrays required for vectorized intersection tests.
         Only runs once per file instance.
         """
+        if self.is_indexed:
+            return
+
         count = len(self.node_entries)
         self._node_bounds_min = np.zeros((count, 3))
         self._node_bounds_max = np.zeros((count, 3))
@@ -335,7 +363,8 @@ class MeeFile():
         # Type assertion: after build_index(), these arrays are guaranteed to be set
         assert self._node_bounds_min is not None and self._node_bounds_max is not None
         
-        intersect_mask = ray.slab_test_vectorized(
+        intersect_mask = slab_test_vectorized(
+            ray,
             self._node_bounds_min, #type: ignore
             self._node_bounds_max, #type: ignore
             radius
@@ -351,6 +380,69 @@ class MeeFile():
         Wrapper to get points for a specific node using the reader.
         """
         return self.reader.GetPoints(node)
+
+    def build_index_octree(self) -> None:
+        """
+        Builds an octree structure using OctreeNode class.
+        Constructs parent-child relationships from node_entries.
+        Only runs once per file instance.
+        """
+        if self.is_octree_indexed:
+            return
+
+        self.octree_index = {}
+        for node in self.node_entries:
+            key = node.key
+            octree_node = OctreeNode(key, self.las_header, self.reader)
+            self.octree_index[key] = octree_node
+        
+        for octree_node in self.octree_index.values():
+            key = octree_node.key
+            if key.d == 0:
+                continue
+
+            parent_key = (key.d-1, key.x//2, key.y//2, key.z//2)
+            parent_key = copc.VoxelKey(parent_key)
+            
+            # find parent in index and link to child
+            parent_node = self.octree_index[parent_key]
+            parent_node.children.append(octree_node)
+            parent_node.children_bbox_min.append(octree_node.bounds_min)
+            parent_node.children_bbox_max.append(octree_node.bounds_max)
+        
+        
+        self.is_octree_indexed = True
+
+    def intersect_nodes_octree(self, ray: Ray, radius: float) -> list:
+        """
+        Hierarchical intersection test using octree structure.
+        Skips checking child nodes if parent node doesn't intersect.
+        Automatically builds octree index if not present.
+        
+        Returns a list of node entries that the ray intersects.
+        """
+        if not self.is_octree_indexed:
+            self.build_index_octree()
+        
+        assert self.octree_index
+        result_entries = [self.octree_index[copc.VoxelKey((0,0,0,0))]]
+        self._traverse_octree(result_entries[0], ray, radius, result_entries)
+        return result_entries
+
+    def _traverse_octree(self, node: OctreeNode, ray: Ray, radius: float, result_entries: list) -> None:
+        hits = slab_test_vectorized(
+            ray,
+            np.array(node.children_bbox_min),
+            np.array(node.children_bbox_max),
+            radius
+        )
+
+        intersected_nodes = [node.children[i] for i in range(len(node.children)) if hits[i]]
+        for node in intersected_nodes:
+            result_entries.append(node)
+            if len(node.children) > 0:
+                self._traverse_octree(node, ray, radius, result_entries)
+
 
 
 
@@ -413,8 +505,6 @@ class Ray():
         # Convert list to numpy array if needed
         if isinstance(value, list):
             value = np.array(value)
-        if not isinstance(value, np.ndarray):
-            raise TypeError("Richtung muss ein NumPy ndarray oder eine Liste sein")
         if value.shape != (3,):
             raise ValueError("Richtung muss ein 3D vector (shape (3,)) sein")
 
@@ -428,50 +518,6 @@ class Ray():
 
     def __str__(self):
         return f"Ray( Ursprung={self.origin}, direction={self.direction})"
-        
-    def slab_test(self, box: copc.Box, radius) -> bool:
-        """Tests intersection against a single copclib.Box object
-        returns bool"""
-        t_min, t_max = 0.0, np.inf
-        box_min = np.array([box.x_min - radius, box.y_min - radius, box.z_min - radius]) # berücksichtigt radius
-        box_max = np.array([box.x_max + radius, box.y_max + radius, box.z_max + radius]) 
-        
-        t1 = (box_min - self.origin) * self._inverse_direction
-        t2 = (box_max - self.origin) * self._inverse_direction
-
-        # minimaler und maximaler t-Wert pro Achse
-        # np.minimum/maximum vergleicht Elementweise
-        t_near = np.minimum(t1, t2)
-        t_far = np.maximum(t1, t2)
-
-        t_min = np.max(t_near) # spätest möglicher Eintrittszeitpunkt
-        t_max = np.min(t_far) # frühest möglicher Austrittszeitpunkt
-        
-        return (t_min < t_max)
-    
-    def slab_test_vectorized(self, boxes_min: np.ndarray, boxes_max: np.ndarray, radius: float) -> np.ndarray:
-        """
-        Tests intersection against given boxes simultaneously.
-        Returns a boolean mask.
-        """
-        # Expand boxes by radius
-        b_min = boxes_min - radius
-        b_max = boxes_max + radius
-
-        # Vectorized calculation (N, 3)
-        t1 = (b_min - self.origin) * self._inverse_direction
-        t2 = (b_max - self.origin) * self._inverse_direction
-
-        # Find t_near and t_far
-        t_near = np.minimum(t1, t2)
-        t_far = np.maximum(t1, t2)
-
-        # Max of nearest, Min of farthest (Collapse to shape (N,))
-        t_enter = np.max(t_near, axis=1)
-        t_exit = np.min(t_far, axis=1)
-
-        # exit > 0 (box is not behind ray)
-        return (t_enter < t_exit) #& (t_exit > 0)
 
 
 
@@ -518,6 +564,99 @@ class NodeCache():
 
     def __len__(self) -> int:
         return len(self.cache)
+
+
+
+
+
+
+
+
+
+
+
+class OctreeNode():
+    def __init__(self, key: tuple | copc.VoxelKey, las_header: copc.LasHeader, reader: copc.FileReader):
+        if isinstance(key, (tuple, list)):
+            self.key = copc.VoxelKey(key)
+        elif isinstance(key, copc.VoxelKey):
+            self.key = key
+        else: raise TypeError("key has to be a tuple, list or copc.Voxelkey")
+
+        if isinstance(las_header, copc.LasHeader):
+            self.las_header = las_header
+        else: raise TypeError("las_header has to be of type: copc.LasHeader")
+
+        self.copclib_node = reader.FindNode(key)
+        
+        self.box = copc.Box(key, las_header)
+        self.bounds_min = [self.box.x_min, self.box.y_min, self.box.z_min]
+        self.bounds_max = [self.box.x_max, self.box.y_max, self.box.z_max]
+        
+        self.children = []
+        self.children_bbox_min = []
+        self.children_bbox_max = []
+
+
+    def __str__(self) -> str:
+        return f"OctreeNode({self.key}) nChildren: {len(self.children)}"
+
+    def __repr__(self) -> str:
+        return f"OctreeNode({self.key}) nChildren: {len(self.children)}"
+
+
+
+
+
+
+
+
+
+
+
+def slab_test(ray, box: copc.Box, radius) -> bool:
+    """Tests intersection against a single copclib.Box object
+    returns bool"""
+    t_min, t_max = 0.0, np.inf
+    box_min = np.array([box.x_min - radius, box.y_min - radius, box.z_min - radius]) # berücksichtigt radius
+    box_max = np.array([box.x_max + radius, box.y_max + radius, box.z_max + radius]) 
+    
+    t1 = (box_min - ray.origin) * ray._inverse_direction
+    t2 = (box_max - ray.origin) * ray._inverse_direction
+
+    # minimaler und maximaler t-Wert pro Achse
+    # np.minimum/maximum vergleicht Elementweise
+    t_near = np.minimum(t1, t2)
+    t_far = np.maximum(t1, t2)
+
+    t_min = np.max(t_near) # spätest möglicher Eintrittszeitpunkt
+    t_max = np.min(t_far) # frühest möglicher Austrittszeitpunkt
+    
+    return (t_min < t_max)
+    
+def slab_test_vectorized(ray, boxes_min: np.ndarray, boxes_max: np.ndarray, radius: float) -> np.ndarray:
+    """
+    Tests intersection against given boxes simultaneously.
+    Returns a boolean mask.
+    """
+    # Expand boxes by radius
+    b_min = boxes_min - radius
+    b_max = boxes_max + radius
+
+    # Vectorized calculation (N, 3)
+    t1 = (b_min - ray.origin) * ray._inverse_direction
+    t2 = (b_max - ray.origin) * ray._inverse_direction
+
+    # Find t_near and t_far
+    t_near = np.minimum(t1, t2)
+    t_far = np.maximum(t1, t2)
+
+    # Max of nearest, Min of farthest (Collapse to shape (N,))
+    t_enter = np.max(t_near, axis=1)
+    t_exit = np.min(t_far, axis=1)
+
+    # exit > 0 (box is not behind ray)
+    return (t_enter < t_exit) #& (t_exit > 0)
 
 
 
