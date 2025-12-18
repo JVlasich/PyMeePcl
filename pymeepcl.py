@@ -8,6 +8,7 @@ from typing import List
 from collections import OrderedDict
 import time
 import argparse
+from dataclasses import dataclass
 
 class MeeStruct():
     """
@@ -42,6 +43,7 @@ class MeeStruct():
         """
         self.cache = NodeCache(max_size=cache_size) # Key: (filepath, node_key_string), Value: PointData object
         self.bounds_copc = None
+        self.bounds_las = None
         self.files: List[MeeFile] = []
         
         # Make into list if single input
@@ -73,25 +75,34 @@ class MeeStruct():
         self.update_bounds()
     
     def update_bounds(self):
-        """Updates the combined global octree-bounds of all files."""
+        """Updates the combined global COPC and LAS bounds of all files."""
         if len(self.files) == 0:
             self.bounds_copc = None
+            self.bounds_las = None
             return
 
-        # prealocate empty array
+        # preallocate empty arrays
         count = len(self.files)
-        bounds_min = np.zeros((count, 3))
-        bounds_max = np.zeros((count, 3))
+        bounds_copc_min = np.zeros((count, 3))
+        bounds_copc_max = np.zeros((count, 3))
+        bounds_las_min = np.zeros((count, 3))
+        bounds_las_max = np.zeros((count, 3))
 
-        # populate array
+        # populate arrays
         for i, file in enumerate(self.files):
-            bounds_min[i] = file.global_bounds_min
-            bounds_max[i] = file.global_bounds_max
+            bounds_copc_min[i] = file.bounds_copc_min
+            bounds_copc_max[i] = file.bounds_copc_max
+            bounds_las_min[i] = file.bounds_las_min
+            bounds_las_max[i] = file.bounds_las_max
 
         # get minimum/maximum of each column
-        minimums = bounds_min.min(axis=0)
-        maximums = bounds_max.max(axis=0)
-        self.bounds_copc = (minimums, maximums)
+        copc_minimums = bounds_copc_min.min(axis=0)
+        copc_maximums = bounds_copc_max.max(axis=0)
+        las_minimums = bounds_las_min.min(axis=0)
+        las_maximums = bounds_las_max.max(axis=0)
+
+        self.bounds_copc = (copc_minimums, copc_maximums)
+        self.bounds_las = (las_minimums, las_maximums)
 
     def add_file(self, filepath: str):
         """Adds a COPC file to the structure."""
@@ -259,14 +270,15 @@ class MeeFile():
         las_header (copclib.LasHeader): The header object for the LAS file.
         node_entries (List[copclib.Node]): A list of all nodes in the file.
         is_indexed (bool); is_octree_indexed (bool): True if the file has been indexed.
-        octree_index (OctreeIndex | None): Octree structure. None until build_index_octree is called
+        octree_index (dict | None): Octree structure. None until build_index_octree is called
         _node_bounds_* (np.ndarray): Node bounds of the file (min/max), None until build_index is called
-        global_bounds_* (np.ndarray): Global bounds of the file. Differentiated between octree bounds and las bounds.
+        bounds_copc_* (np.ndarray): Global COPC bounds of the file.
+        bounds_las_* (np.ndarray): Global las bounds of the file
 
     Methods:
         intersect_global(ray: Ray, radius: float = 1) -> bool: Checks if ray hits the root box.
         intersect_nodes(ray: Ray, radius: float = 1) -> List[Node]: Returns nodes intersected by ray.
-        intersect_nodes_octree(ray: Ray, radius: float = 1) -> List[OktreeNode]: Returns nodes intersected by ray.
+        intersect_nodes_octree(ray: Ray, radius: float = 1) -> List[OctreeNode]: Returns nodes intersected by ray.
         get_points(node: copclib.Node) -> PointData: Retrieves points for nodes.
         build_index(): Constructs numpy arrays for vectorized intersection tests.
         build_index_octree(): Constructs octree structure.
@@ -284,19 +296,20 @@ class MeeFile():
         self.node_entries = self.reader.GetAllNodes()
         self.is_indexed = False
         
-        # Global bounds of the file (Min/Max from header)
-        self.global_bounds_min = np.array([
+        # Octree bounds of the file
+        self.bounds_copc_min = np.array([
             self.config.copc_info.center_x,
             self.config.copc_info.center_y,
             self.config.copc_info.center_z,]) - self.config.copc_info.halfsize
 
-        self.global_bounds_max = np.array([
+        self.bounds_copc_max = np.array([
             self.config.copc_info.center_x,
             self.config.copc_info.center_y,
             self.config.copc_info.center_z,]) + self.config.copc_info.halfsize
 
-        self.global_bounds_min_las = np.array([self.las_header.min.x, self.las_header.min.y, self.las_header.min.z])
-        self.global_bounds_max_las = np.array([self.las_header.max.x, self.las_header.max.y, self.las_header.max.z])
+        # Las bounds of the file (min max points)
+        self.bounds_las_min = np.array([self.las_header.min.x, self.las_header.min.y, self.las_header.min.z])
+        self.bounds_las_max = np.array([self.las_header.max.x, self.las_header.max.y, self.las_header.max.z])
         
         # Arrays for vectorized node checks (initialized in build_index)
         self._node_bounds_min = None
@@ -311,8 +324,8 @@ class MeeFile():
         Checks if the ray hits the bounding box of the entire file.
         """
         # Wrap single bounds in array shape (1, 3) for vectorized function
-        b_min = self.global_bounds_min.reshape(1, 3)
-        b_max = self.global_bounds_max.reshape(1, 3)
+        b_min = self.bounds_copc_min.reshape(1, 3)
+        b_max = self.bounds_copc_max.reshape(1, 3)
         
         hit = slab_test_vectorized(ray, b_min, b_max, radius)
         return hit[0]
@@ -350,8 +363,8 @@ class MeeFile():
         
         intersect_mask = slab_test_vectorized(
             ray,
-            self._node_bounds_min, #type: ignore
-            self._node_bounds_max, #type: ignore
+            self._node_bounds_min,
+            self._node_bounds_max,
             radius
         )
         
@@ -399,7 +412,6 @@ class MeeFile():
             octree_node.children_bbox_min = np.array(octree_node.children_bbox_min)
             octree_node.children_bbox_max = np.array(octree_node.children_bbox_max)
         
-        
         self.is_octree_indexed = True
 
     def intersect_nodes_octree(self, ray: Ray, radius: float) -> list:
@@ -408,7 +420,7 @@ class MeeFile():
         Skips checking child nodes if parent node doesn't intersect.
         Automatically builds octree index if not present.
         
-        Returns a list of OktreeNode entries that the ray intersects.
+        Returns a list of OctreeNode entries that the ray intersects.
         """
         if not self.is_octree_indexed:
             self.build_index_octree()
@@ -424,6 +436,7 @@ class MeeFile():
 
     def _traverse_octree(self, node: OctreeNode, ray: Ray, radius: float, result_entries: list) -> None:
         assert (isinstance(node.children_bbox_min, np.ndarray) and isinstance(node.children_bbox_max, np.ndarray))
+        
         # Tests the ray against all the children
         hits = slab_test_vectorized(
             ray,
@@ -455,9 +468,9 @@ class MeeFile():
 
 class Ray():
     """
-    Klasse die einen Strahl anhand Ursprung und Richtung beschreibt.
+    Class that describes a ray using origin and direction.
 
-    Attribute:
+    Attributes:
         direction, origin: np.ndarray
     """
     def __init__(self, origin: List[float] | np.ndarray, direction: List[float] | np.ndarray) -> None:
@@ -475,7 +488,7 @@ class Ray():
             direction = np.array(direction)
             
         if not ((origin.shape == (3,)) and (direction.shape == (3,))):
-            raise ValueError("Argumente müssen jeweils 3 Dimensionen haben") 
+            raise ValueError("Arguments must each have 3 dimensions") 
 
         self.origin = origin
         self.direction = direction
@@ -489,10 +502,8 @@ class Ray():
         # Convert list to numpy array if needed
         if isinstance(value, list):
             value = np.array(value)
-        if not isinstance(value, np.ndarray):
-            raise TypeError("Ursprung muss ein NumPy ndarray oder eine Liste sein.")
         if value.shape != (3,):
-            raise ValueError("Ursprung muss ein 3D vector (shape (3,)) sein")
+            raise ValueError("Origin must be a 3D vector (shape (3,))")
         self._origin = value
 
     @property
@@ -505,12 +516,12 @@ class Ray():
         if isinstance(value, list):
             value = np.array(value)
         if value.shape != (3,):
-            raise ValueError("Richtung muss ein 3D vector (shape (3,)) sein")
+            raise ValueError("Direction must be a 3D vector (shape (3,))")
 
-        # Normalisiere den Richtungsvektor
+        # Normalize the direction vector
         norm = np.linalg.norm(value)
         if np.isclose(norm, 0):
-            raise ValueError("Richtung darf kein Nullvektor sein")
+            raise ValueError("Direction must not be a zero vector")
         self._direction = value / norm
         with np.errstate(divide='ignore'):
             self._inverse_direction = 1.0 / self.direction 
@@ -530,10 +541,10 @@ class Ray():
         return ergebnis 
 
     def __str__(self):
-        return f"Ray( Ursprung={self.origin}, direction={self.direction})"
+        return f"Ray(origin={self.origin}, direction={self.direction})"
     
     def __repr__(self):
-        return f"Ray( Ursprung={self.origin}, direction={self.direction})"
+        return f"Ray(origin={self.origin}, direction={self.direction})"
 
 
 
@@ -600,15 +611,18 @@ class OctreeNode():
             self.key = copc.VoxelKey(key)
         elif isinstance(key, copc.VoxelKey):
             self.key = key
-        else: raise TypeError("key has to be a tuple, list or copc.Voxelkey")
+        else:
+            raise TypeError("key has to be a tuple, list or copc.VoxelKey")
 
         if isinstance(las_header, copc.LasHeader):
             self.las_header = las_header
-        else: raise TypeError("las_header has to be of type: copc.LasHeader")
+        else:
+            raise TypeError("las_header has to be of type: copc.LasHeader")
 
-        self.copclib_node = reader.FindNode(key)
+        # get copclib.Node
+        self.copclib_node = reader.FindNode(self.key)
         
-        self.box = copc.Box(key, las_header)
+        self.box = copc.Box(self.key, las_header)
         self.bounds_min = [self.box.x_min, self.box.y_min, self.box.z_min]
         self.bounds_max = [self.box.x_max, self.box.y_max, self.box.z_max]
         
