@@ -35,10 +35,9 @@ class MeeStruct():
             Recalculates the combined global bounds of all loaded files.
     """
     
-    def __init__(self, source: str | List[str], pattern: str = "*", cache_size: int = 25):
+    def __init__(self, source: str | List[str], cache_size: int = 25):
         """
         Initialize with a single path string, a list of strings, or a directory string.
-        arg pattern: glob search
         arg cache_size: maximum nodes to be loaded at once
         """
         self.cache = NodeCache(max_size=cache_size) # Key: (filepath, node_key_string), Value: PointData object
@@ -59,6 +58,7 @@ class MeeStruct():
 
             if os.path.isdir(entry):
                 # construct the search string
+                pattern = "*.copc.laz"
                 search_path = os.path.join(entry, pattern)
                 # Use glob to search dir
                 matches = glob.glob(search_path)
@@ -249,42 +249,27 @@ class MeeStruct():
 
 
 class MeeFile():
-    ## Properties:
-        # reader
-        # config
-        # las_header
-        # filepath
-
-        # node_entries
-            # GetAllNodes()
-        # global_bounds
-            # (2, 3) array containing Min/Max of the file
-        # global_bounds
-            # Min/Max of file, same as root_box
-        # is_indexed
-            # True / False
-            # Boxes have been constructed
-        # _node_bounds_min / _node_bounds_max
-            # (N, 3) Node minimums / maximums
-            # None until first hit with ray
-
-    ## Methods:
-        # init
-            # reads header, set global bounds
-        # intersect_global(ray)
-            # True if ray hits root_box
-            # use in MeeStruct class
-        # intersect_nodes(ray, radius)
-            # check if indexed
-            # if not, call build_index
-            # do slab test
-        # get_points(nodes)
-        # build_index()
-            # fills numpy arrays
-            # set indexed to true
-    
     """
     Represents a single COPC file. Handles reading, indexing, and bounding box logic.
+
+    Attributes:
+        filepath (str): The path to the COPC file.
+        reader (copclib.FileReader): The reader object for the COPC file.
+        config (copclib.FileConfig): The configuration object for the COPC file.
+        las_header (copclib.LasHeader): The header object for the LAS file.
+        node_entries (List[copclib.Node]): A list of all nodes in the file.
+        is_indexed (bool); is_octree_indexed (bool): True if the file has been indexed.
+        octree_index (OctreeIndex | None): Octree structure. None until build_index_octree is called
+        _node_bounds_* (np.ndarray): Node bounds of the file (min/max), None until build_index is called
+        global_bounds_* (np.ndarray): Global bounds of the file. Differentiated between octree bounds and las bounds.
+
+    Methods:
+        intersect_global(ray: Ray, radius: float = 1) -> bool: Checks if ray hits the root box.
+        intersect_nodes(ray: Ray, radius: float = 1) -> List[Node]: Returns nodes intersected by ray.
+        intersect_nodes_octree(ray: Ray, radius: float = 1) -> List[OktreeNode]: Returns nodes intersected by ray.
+        get_points(node: copclib.Node) -> PointData: Retrieves points for nodes.
+        build_index(): Constructs numpy arrays for vectorized intersection tests.
+        build_index_octree(): Constructs octree structure.
     """
     def __init__(self, filepath: str):
         if not os.path.exists(filepath):
@@ -409,6 +394,10 @@ class MeeFile():
             parent_node.children.append(octree_node)
             parent_node.children_bbox_min.append(octree_node.bounds_min)
             parent_node.children_bbox_max.append(octree_node.bounds_max)
+
+        for octree_node in self.octree_index.values():
+            octree_node.children_bbox_min = np.array(octree_node.children_bbox_min)
+            octree_node.children_bbox_max = np.array(octree_node.children_bbox_max)
         
         
         self.is_octree_indexed = True
@@ -419,29 +408,39 @@ class MeeFile():
         Skips checking child nodes if parent node doesn't intersect.
         Automatically builds octree index if not present.
         
-        Returns a list of node entries that the ray intersects.
+        Returns a list of OktreeNode entries that the ray intersects.
         """
         if not self.is_octree_indexed:
             self.build_index_octree()
-        
         assert self.octree_index
+
+        # Create List to return, Root Node is always hit if this function is called
         result_entries = [self.octree_index[copc.VoxelKey((0,0,0,0))]]
+
+        # Recursively traverse the children of hit nodes, start with root, populates list
         self._traverse_octree(result_entries[0], ray, radius, result_entries)
+
         return result_entries
 
     def _traverse_octree(self, node: OctreeNode, ray: Ray, radius: float, result_entries: list) -> None:
+        assert (isinstance(node.children_bbox_min, np.ndarray) and isinstance(node.children_bbox_max, np.ndarray))
+        # Tests the ray against all the children
         hits = slab_test_vectorized(
             ray,
-            np.array(node.children_bbox_min),
-            np.array(node.children_bbox_max),
+            node.children_bbox_min,
+            node.children_bbox_max,
             radius
         )
 
         intersected_nodes = [node.children[i] for i in range(len(node.children)) if hits[i]]
         for node in intersected_nodes:
+            # Append to result list and call the function again if not a leaf
             result_entries.append(node)
             if len(node.children) > 0:
                 self._traverse_octree(node, ray, radius, result_entries)
+
+    def __repr__(self) -> str:
+        return f"File({self.filepath})"
 
 
 
@@ -516,7 +515,24 @@ class Ray():
         with np.errstate(divide='ignore'):
             self._inverse_direction = 1.0 / self.direction 
 
+    def find_step_to_value(self, value: float, xyz: int) -> float:
+        """
+        Calculates the distance in meters along the ray until a given value is reached on the x/y/z axis.
+        Parameters:
+            value (float): The desired value to be reached.
+            xyz (int): The dimension represented by the axis (0 for x, 1 for y, 2 for z).
+        Returns:
+            float: The number of steps (in meters) the ray needs to reach the given value.
+        """
+        assert xyz in (0,1,2)
+        assert self.direction[xyz] != 0
+        ergebnis = (value - self.origin[xyz]) / self.direction[xyz]
+        return ergebnis 
+
     def __str__(self):
+        return f"Ray( Ursprung={self.origin}, direction={self.direction})"
+    
+    def __repr__(self):
         return f"Ray( Ursprung={self.origin}, direction={self.direction})"
 
 
@@ -564,6 +580,9 @@ class NodeCache():
 
     def __len__(self) -> int:
         return len(self.cache)
+    
+    def __repr__(self) -> str:
+        return f"NodeCache({len(self.cache)})"
 
 
 
